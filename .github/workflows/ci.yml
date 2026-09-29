@@ -79,7 +79,25 @@ jobs:
         # 切到临时目录，避免 import 到源码目录而掩盖打包缺失
         working-directory: ${{ runner.temp }}
         run: |
-          python -c "import pyfuck, pathlib; pyfuck.selfcheck(); from pyfuck.web import app; t = pathlib.Path(app.template_folder) / 'index.html'; assert t.is_file(), t; print('打包自检通过，模板:', t)"
+          python - <<'PY'
+          import pathlib
+
+          import pyfuck
+
+          pyfuck.selfcheck()
+
+          # 注意 app.template_folder 只是个相对名（'templates'），
+          # 必须挂到 app.root_path 上才是真实路径
+          from pyfuck.web import app
+
+          template = pathlib.Path(app.root_path) / app.template_folder / "index.html"
+          assert template.is_file(), f"模板没进 wheel: {template}"
+
+          resp = app.test_client().get("/")
+          assert resp.status_code == 200, f"首页渲染失败: HTTP {resp.status_code}"
+          print(f"打包自检通过：首页 200，模板 {template}")
+          PY
+
           pyfuck -c "print('hello from packed wheel')" -o encoded.py --stats
           python encoded.py
       - name: 上传构建产物
