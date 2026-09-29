@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 import sys
 import tempfile
@@ -59,7 +60,24 @@ def read_source(args: argparse.Namespace) -> str:
     return sys.stdin.read()
 
 
+def _harden_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8，避免中文提示在非 UTF-8 控制台下报错。
+
+    Windows 上 stdout 被重定向/管道时编码跟随 ANSI 代码页（常见 cp1252）：
+    stdout 里 print 中文会直接 UnicodeEncodeError，stderr 则会被 Python 默认的
+    backslashreplace 转义成 \\uXXXX 乱码。而程序本体输出永远是那 13 个 ASCII
+    字符，只有诊断信息含中文，所以统一改成 UTF-8 不影响任何合法输出。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # 被替换成 StringIO 之类时跳过
+            continue
+        with contextlib.suppress(ValueError, OSError):  # pragma: no cover - 特殊流不支持重配置
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _harden_stdio()
     args = build_parser().parse_args(argv)
 
     if args.server:

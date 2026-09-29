@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,13 @@ from pyfuck import encoder as pe
 
 PYTHON = sys.executable or "python"
 ROOT = Path(__file__).resolve().parent.parent
+
+# 子进程一律跑在 UTF-8 模式下。
+# GitHub 的 Windows runner 控制台是 cp1252，而用例里有 print 中文/emoji 的源码：
+# 那时编码后的程序和原始源码会"一起"崩（纯 Python 也一样崩），属于控制台代码页问题，
+# 不是编码器的问题。让两边都跑在 UTF-8 下，比较才有意义。
+# PYTHONIOENCODING 显式覆盖，防止外部环境已设置成别的编码。
+UTF8_ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
 # (名字, 源码)：期望输出由"原始源码自己跑一遍"给出，避免手写转义出错
 CASES: list[tuple[str, str]] = [
@@ -65,6 +73,7 @@ def _run_file(path: Path, timeout: float = 120) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=UTF8_ENV,
         timeout=timeout,
     )
 
@@ -134,6 +143,7 @@ class TestCli(unittest.TestCase):
             encoding="utf-8",
             input=input_text,
             cwd=ROOT,
+            env=UTF8_ENV,
             timeout=180,
         )
 
@@ -188,6 +198,45 @@ class TestCli(unittest.TestCase):
         proc = self._cli(str(ROOT / "legacy" / "pyfuck.py"), "--no-check")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertLessEqual(set(proc.stdout.strip()), pyfuck.ALPHABET)
+
+
+class TestCliOnNonUtf8Console(unittest.TestCase):
+    """回归：中文提示在非 UTF-8 控制台下不能把 CLI 打崩。
+
+    GitHub 的 Windows runner 上 stdout 是 cp1252，之前 `-h` 会直接
+    UnicodeEncodeError，stderr 的中文则被转义成 \\uXXXX 乱码。
+    """
+
+    @staticmethod
+    def _cli(*args: str) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+        env["PYTHONIOENCODING"] = "cp1252"  # 模拟 Windows 英文默认控制台
+        return subprocess.run(
+            [PYTHON, "-m", "pyfuck", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            env=env,
+            timeout=180,
+        )
+
+    def test_help(self):
+        proc = self._cli("-h")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("把 Python 源码编码成", proc.stdout)
+        self.assertIn("示例", proc.stdout)
+
+    def test_stats_on_stderr(self):
+        proc = self._cli("-c", "print(2)", "--stats")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("源码", proc.stderr)  # 不能被转义成 \u6e90\u7801
+        self.assertLessEqual(set(proc.stdout.strip()), pyfuck.ALPHABET)  # 输出本体仍是纯 ASCII
+
+    def test_error_message(self):
+        proc = self._cli("-c", "   ")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("编码失败", proc.stderr)
 
 
 class TestWeb(unittest.TestCase):
